@@ -50,7 +50,7 @@ var IO = new socketio.Server(App, Options);
 // Main game objects
 var BCrypt = require("bcrypt");
 var AccountCollection = process.env.ACCOUNT_COLLECTION || "Accounts";
-var Account = [];
+const Account = new Map();
 var ChatRoom = [];
 var ChatRoomMessageType = ["Chat", "Action", "Activity", "Emote", "Whisper", "Hidden", "Status"];
 var ChatRoomProduction = [
@@ -380,7 +380,7 @@ function AccountLoginRun() {
 
 // Removes all instances of that character from all chat rooms
 function AccountRemoveFromChatRoom(MemberNumber) {
-	if ((MemberNumber == null) || (Account == null) || (Account.length == 0) || (ChatRoom == null) || (ChatRoom.length == 0)) return;
+	if ((MemberNumber == null) || (Account == null) || (Account.size === 0) || (ChatRoom == null) || (ChatRoom.length == 0)) return;
 	for (let C = 0; C < ChatRoom.length; C++) {
 		if ((ChatRoom[C] != null) && (ChatRoom[C].Account != null) && (ChatRoom[C].Account.length > 0)) {
 			for (let A = 0; A < ChatRoom[C].Account.length; A++)
@@ -419,12 +419,11 @@ async function AccountLoginProcess(socket, AccountName, Password) {
 	}
 
 	// Disconnect duplicated logged accounts
-	for (let A = 0; A < Account.length; A++) {
-		const Acc = Account[A];
+	for (const [AccId, Acc] of Account) {
 		if (Acc.AccountName === result.AccountName) {
 			Acc.Socket.emit("ForceDisconnect", "ErrorDuplicatedLogin");
 			Acc.Socket.disconnect(true);
-			AccountRemove(Acc.ID);
+			AccountRemove(AccId);
 			break;
 		}
 	}
@@ -450,7 +449,7 @@ async function AccountLoginProcess(socket, AccountName, Password) {
 	console.log("Login account: " + result.AccountName + " ID: " + socket.id + " " + result.Environment);
 	AccountValidData(result);
 	AccountRemoveFromChatRoom(result.MemberNumber);
-	Account.push(result);
+	Account.set(socket.id, result);
 	OnLogin(socket);
 	delete result.Password;
 	delete result.Email;
@@ -548,9 +547,9 @@ function AccountUpdate(data, socket) {
 // Updates email address
 function AccountUpdateEmail(data, socket) {
 	if ((data != null) && (typeof data === "object") && (data.EmailOld != null) && (data.EmailNew != null) && (typeof data.EmailOld === "string") && (typeof data.EmailNew === "string")) {
-		var Acc = AccountGet(socket.id);
+		const Acc = Account.get(socket.id);
 		var E = /^[a-zA-Z0-9@.!#$%&'*+/=?^_`{|}~-]+$/;
-		if ((Acc != null) && (data.EmailNew.match(E) || (data.EmailNew == "")) && (data.EmailNew.length <= 100) && (data.EmailNew.match(E) || (data.EmailNew == "")) && (data.EmailNew.length <= 100))
+		if ((Acc !== undefined) && (data.EmailNew.match(E) || (data.EmailNew == "")) && (data.EmailNew.length <= 100) && (data.EmailNew.match(E) || (data.EmailNew == "")) && (data.EmailNew.length <= 100))
 			Database.collection(AccountCollection).find({ AccountName : Acc.AccountName }).sort({MemberNumber: -1}).limit(1).toArray(function(err, result) {
 				if (err) throw err;
 				if ((result != null) && (typeof result === "object") && (result.length > 0) && data.EmailOld == result[0].Email) {
@@ -570,8 +569,8 @@ function AccountQuery(data, socket) {
 	if ((data != null) && (typeof data === "object") && !Array.isArray(data) && (data.Query != null) && (typeof data.Query === "string")) {
 
 		// Finds the current account
-		var Acc = AccountGet(socket.id);
-		if (Acc != null) {
+		const Acc = Account.get(socket.id);
+		if (Acc !== undefined) {
 
 			// OnlineFriends query - returns all friends that are online and the room name they are in
 			if ((data.Query == "OnlineFriends") && (Acc.FriendList != null)) {
@@ -629,8 +628,8 @@ function AccountBeep(data, socket) {
 	if ((data != null) && (typeof data === "object") && !Array.isArray(data) && (data.MemberNumber != null) && (typeof data.MemberNumber === "number")) {
 
 		// Make sure both accounts are online, friends and sends the beep to the friend
-		var Acc = AccountGet(socket.id);
-		if (Acc != null)
+		const Acc = Account.get(socket.id);
+		if (Acc !== undefined)
 			for (var A = 0; A < Account.length; A++)
 				if (Account[A].MemberNumber == data.MemberNumber)
 					if ((Account[A].Environment == Acc.Environment) && (((Account[A].FriendList != null) && (Account[A].FriendList.indexOf(Acc.MemberNumber) >= 0)) || ((Account[A].Ownership != null) && (Account[A].Ownership.MemberNumber != null) && (Account[A].Ownership.MemberNumber == Acc.MemberNumber)) || ((data.BeepType != null) && (typeof data.BeepType === "string") && (data.BeepType == "Leash")))) {
@@ -651,24 +650,13 @@ function AccountBeep(data, socket) {
 
 // Removes the account from the buffer
 function AccountRemove(ID) {
-	if (ID != null)
-		for (const Acc of Account)
-			if (Acc.ID == ID) {
-				console.log("Disconnecting account: " + Acc.AccountName + " ID: " + ID);
-				ChatRoomRemove(Acc, "ServerDisconnect", []);
-				const index = Account.indexOf(Acc);
-				if (index >= 0)
-					Account.splice(index, 1);
-				break;
-			}
-}
-
-// Returns the account object related to it's ID
-function AccountGet(ID) {
-	for (var P = 0; P < Account.length; P++)
-		if (Account[P].ID == ID)
-			return Account[P];
-	return null;
+	if (ID != null) {
+		const Acc = Account.get(ID);
+		if (Acc === undefined) return;
+		console.log("Disconnecting account: " + Acc.AccountName + " ID: " + ID);
+		ChatRoomRemove(Acc, "ServerDisconnect", []);
+		Account.delete(ID);
+	}
 }
 
 // When a user searches for a chat room
@@ -676,8 +664,8 @@ function ChatRoomSearch(data, socket) {
 	if ((data != null) && (typeof data === "object") && (data.Query != null) && (typeof data.Query === "string") && (data.Query.length <= 20)) {
 
 		// Finds the current account
-		var Acc = AccountGet(socket.id);
-		if (Acc != null) {
+		const Acc = Account.get(socket.id);
+		if (Acc !== undefined) {
 
 			// Gets the space of the chat room (empty for public, asylum, etc.)
 			var Space = "";
@@ -754,8 +742,8 @@ function ChatRoomCreate(data, socket) {
 		var LN = /^[a-zA-Z0-9 ]+$/;
 		if (data.Name.match(LN) && (data.Name.length >= 1) && (data.Name.length <= 20) && (data.Description.length <= 100) && (data.Background.length <= 100)) {
 			// Finds the account and links it to the new room
-			var Acc = AccountGet(socket.id);
-			if (Acc == null) {
+			const Acc = Account.get(socket.id);
+			if (Acc === undefined) {
 				socket.emit("ChatRoomCreateResponse", "AccountError");
 				return;
 			}
@@ -816,8 +804,8 @@ function ChatRoomJoin(data, socket) {
 	if ((data != null) && (typeof data === "object") && (data.Name != null) && (typeof data.Name === "string") && (data.Name != "")) {
 
 		// Finds the current account
-		var Acc = AccountGet(socket.id);
-		if (Acc != null) {
+		const Acc = Account.get(socket.id);
+		if (Acc !== undefined) {
 
 			// Finds the room and join it
 			for (var C = 0; C < ChatRoom.length; C++)
@@ -899,8 +887,8 @@ function ChatRoomRemove(Acc, Reason, Dictionary) {
 
 // Finds the current account and removes it from it's chat room, nothing is returned to the client
 function ChatRoomLeave(socket) {
-	var Acc = AccountGet(socket.id);
-	if (Acc != null) ChatRoomRemove(Acc, "ServerLeave", []);
+	const Acc = Account.get(socket.id);
+	if (Acc !== undefined) ChatRoomRemove(Acc, "ServerLeave", []);
 }
 
 // Sends a text message to everyone in the room or a specific target
@@ -921,8 +909,8 @@ function ChatRoomMessage(CR, Sender, Content, Type, Target, Dictionary) {
 // When a user sends a chat message, we propagate it to everyone in the room
 function ChatRoomChat(data, socket) {
 	if ((data != null) && (typeof data === "object") && (data.Content != null) && (data.Type != null) && (typeof data.Content === "string") && (typeof data.Type === "string") && (ChatRoomMessageType.indexOf(data.Type) >= 0) && (data.Content.length <= 1000)) {
-		var Acc = AccountGet(socket.id);
-		if (Acc != null) ChatRoomMessage(Acc.ChatRoom, Acc.MemberNumber, data.Content.trim(), data.Type, data.Target, data.Dictionary);
+		const Acc = Account.get(socket.id);
+		if (Acc !== undefined) ChatRoomMessage(Acc.ChatRoom, Acc.MemberNumber, data.Content.trim(), data.Type, data.Target, data.Dictionary);
 	}
 }
 
@@ -930,7 +918,7 @@ function ChatRoomChat(data, socket) {
 function ChatRoomGame(data, socket) {
 	if ((data != null) && (typeof data === "object")) {
 		var R = Math.random();
-		var Acc = AccountGet(socket.id);
+		const Acc = Account.get(socket.id);
 		if (Acc && Acc.ChatRoom) {
 			IO.to("chatroom-" + Acc.ChatRoom.ID).emit("ChatRoomGameResponse", { Sender: Acc.MemberNumber, Data: data, RNG: R } );
 		}
@@ -1126,8 +1114,8 @@ function ChatRoomSyncSingle(Acc, SourceMemberNumber) {
 // Updates a character from the chat room
 function ChatRoomCharacterUpdate(data, socket) {
 	if ((data != null) && (typeof data === "object") && (data.ID != null) && (typeof data.ID === "string") && (data.ID != "") && (data.Appearance != null)) {
-		var Acc = AccountGet(socket.id);
-		if ((Acc != null) && (Acc.ChatRoom != null))
+		const Acc = Account.get(socket.id);
+		if ((Acc !== undefined) && (Acc.ChatRoom != null))
 			if (Acc.ChatRoom.Ban.indexOf(Acc.MemberNumber) < 0)
 				for (var A = 0; ((Acc.ChatRoom != null) && (A < Acc.ChatRoom.Account.length)); A++)
 					if ((Acc.ChatRoom.Account[A].ID == data.ID) && ChatRoomGetAllowItem(Acc, Acc.ChatRoom.Account[A]))
@@ -1143,7 +1131,7 @@ function ChatRoomCharacterUpdate(data, socket) {
 // Updates a character expression for a chat room, this does not update the database
 function ChatRoomCharacterExpressionUpdate(data, socket) {
 	if ((data != null) && (typeof data === "object") && (typeof data.Group === "string") && (data.Group != "")) {
-		const Acc = AccountGet(socket.id);
+		const Acc = Account.get(socket.id);
 		if (Acc && Array.isArray(data.Appearance) && data.Appearance.length >= 5)
 			Acc.Appearance = data.Appearance;
 		if (Acc && Acc.ChatRoom) {
@@ -1157,8 +1145,8 @@ function ChatRoomCharacterPoseUpdate(data, socket) {
 	if ((data != null) && (typeof data === "object")) {
 		if (typeof data.Pose !== "string" && !Array.isArray(data.Pose)) data.Pose = null;
 		if (Array.isArray(data.Pose)) data.Pose = data.Pose.filter(P => typeof P === "string");
-		var Acc = AccountGet(socket.id);
-		if (Acc != null) Acc.ActivePose = data.Pose;
+		const Acc = Account.get(socket.id);
+		if (Acc !== undefined) Acc.ActivePose = data.Pose;
 		if (Acc && Acc.ChatRoom) {
 			socket.to("chatroom-" + Acc.ChatRoom.ID).emit("ChatRoomSyncPose", { MemberNumber: Acc.MemberNumber, Pose: data.Pose });
 		}
@@ -1168,8 +1156,8 @@ function ChatRoomCharacterPoseUpdate(data, socket) {
 // Updates a character arousal meter for a chat room, this does not update the database
 function ChatRoomCharacterArousalUpdate(data, socket) {
 	if ((data != null) && (typeof data === "object")) {
-		var Acc = AccountGet(socket.id);
-		if ((Acc != null) && (Acc.ArousalSettings != null) && (typeof Acc.ArousalSettings === "object")) {
+		const Acc = Account.get(socket.id);
+		if ((Acc !== undefined) && (Acc.ArousalSettings != null) && (typeof Acc.ArousalSettings === "object")) {
 			Acc.ArousalSettings.OrgasmTimer = data.OrgasmTimer;
 			Acc.ArousalSettings.OrgasmCount = data.OrgasmCount;
 			Acc.ArousalSettings.Progress = data.Progress;
@@ -1186,8 +1174,8 @@ function ChatRoomCharacterItemUpdate(data, socket) {
 	if ((data != null) && (typeof data === "object") && (data.Target != null) && (typeof data.Target === "number") && (data.Group != null) && (typeof data.Group === "string")) {
 
 		// Make sure the source account isn't banned from the chat room and has access to use items on the target
-		var Acc = AccountGet(socket.id);
-		if ((Acc == null) || (Acc.ChatRoom == null) || (Acc.ChatRoom.Ban.indexOf(Acc.MemberNumber) >= 0)) return;
+		const Acc = Account.get(socket.id);
+		if ((Acc === undefined) || (Acc.ChatRoom == null) || (Acc.ChatRoom.Ban.indexOf(Acc.MemberNumber) >= 0)) return;
 		for (var A = 0; (Acc != null) && (Acc.ChatRoom != null) && (Acc.ChatRoom.Account != null) && (A < Acc.ChatRoom.Account.length); A++)
 			if ((Acc.ChatRoom.Account[A].MemberNumber == data.Target) && !ChatRoomGetAllowItem(Acc, Acc.ChatRoom.Account[A]))
 				return;
@@ -1205,8 +1193,8 @@ function ChatRoomAdmin(data, socket) {
 	if ((data != null) && (typeof data === "object") && (data.MemberNumber != null) && (typeof data.MemberNumber === "number") && (data.Action != null) && (typeof data.Action === "string")) {
 
 		// Validates that the current account is a room administrator
-		var Acc = AccountGet(socket.id);
-		if ((Acc != null) && (Acc.ChatRoom != null) && (Acc.ChatRoom.Admin.indexOf(Acc.MemberNumber) >= 0)) {
+		const Acc = Account.get(socket.id);
+		if ((Acc !== undefined) && (Acc.ChatRoom != null) && (Acc.ChatRoom.Admin.indexOf(Acc.MemberNumber) >= 0)) {
 
 			// Only certain actions can be performed by the administrator on themselves
 			if (Acc.MemberNumber == data.MemberNumber && data.Action != "Swap" && data.Action != "MoveLeft" && data.Action != "MoveRight") return;
@@ -1234,7 +1222,7 @@ function ChatRoomAdmin(data, socket) {
 						if ((data.Room.Private != null) && (typeof data.Room.Private === "boolean")) Acc.ChatRoom.Private = data.Room.Private;
 						if ((data.Room.Locked != null) && (typeof data.Room.Locked === "boolean")) Acc.ChatRoom.Locked = data.Room.Locked;
 						socket.emit("ChatRoomUpdateResponse", "Updated");
-						if ((Acc != null) && (Acc.ChatRoom != null)) {
+						if (Acc.ChatRoom != null) {
 							var Dictionary = [];
 							Dictionary.push({Tag: "SourceCharacter", Text: Acc.Name, MemberNumber: Acc.MemberNumber});
 							Dictionary.push({Tag: "ChatRoomName", Text: Acc.ChatRoom.Name});
@@ -1243,7 +1231,7 @@ function ChatRoomAdmin(data, socket) {
 							Dictionary.push({Tag: "ChatRoomLocked", TextToLookUp: (Acc.ChatRoom.Locked ? "Locked" : "Unlocked")});
 							ChatRoomMessage(Acc.ChatRoom, Acc.MemberNumber, "ServerUpdateRoom", "Action", null, Dictionary);
 						}
-						if ((Acc != null) && (Acc.ChatRoom != null)) ChatRoomSyncRoomProperties(Acc.ChatRoom, Acc.MemberNumber);
+						ChatRoomSyncRoomProperties(Acc.ChatRoom, Acc.MemberNumber);
 						return;
 					} else socket.emit("ChatRoomUpdateResponse", "InvalidRoomData");
 				} else socket.emit("ChatRoomUpdateResponse", "InvalidRoomData");
@@ -1262,8 +1250,7 @@ function ChatRoomAdmin(data, socket) {
 				Acc.ChatRoom.Account[TargetAccountIndex] = DestinationAccount;
 				Acc.ChatRoom.Account[DestinationAccountIndex] = TargetAccount;
 				ChatRoomSyncReorderPlayers(Acc.ChatRoom, Acc.MemberNumber);
-				if ((Acc != null) && (Acc.ChatRoom != null))
-					ChatRoomMessage(Acc.ChatRoom, Acc.MemberNumber, "ServerSwap", "Action", null, Dictionary);
+				ChatRoomMessage(Acc.ChatRoom, Acc.MemberNumber, "ServerSwap", "Action", null, Dictionary);
 				return;
 			}
 
@@ -1405,8 +1392,8 @@ function ChatRoomAllowItem(data, socket) {
 	if ((data != null) && (typeof data === "object") && (data.MemberNumber != null) && (typeof data.MemberNumber === "number")) {
 
 		// Gets the source account and target account to check if we allow or not
-		var Acc = AccountGet(socket.id);
-		if ((Acc != null) && (Acc.ChatRoom != null))
+		const Acc = Account.get(socket.id);
+		if ((Acc !== undefined) && (Acc.ChatRoom != null))
 			for (var A = 0; ((Acc.ChatRoom != null) && (A < Acc.ChatRoom.Account.length)); A++)
 				if (Acc.ChatRoom.Account[A].MemberNumber == data.MemberNumber)
 					socket.emit("ChatRoomAllowItem", { MemberNumber: data.MemberNumber, AllowItem: ChatRoomGetAllowItem(Acc, Acc.ChatRoom.Account[A]) });
@@ -1515,8 +1502,8 @@ function AccountOwnership(data, socket) {
 	if (data != null && typeof data === "object" && typeof data.MemberNumber === "number") {
 
 		// The submissive can flush it's owner at any time in the trial, or after a delay if collared.  Players on Extreme mode cannot break the full ownership.
-		const Acc = AccountGet(socket.id);
-		if (Acc == null) return;
+		const Acc = Account.get(socket.id);
+		if (Acc === undefined) return;
 
 		if (Acc.Ownership != null &&
 			Acc.Ownership.Stage != null &&
@@ -1667,8 +1654,8 @@ function AccountLovership(data, socket) {
 		}
 
 		// A Lover can break her relationship any time if not wed, or after a delay if official
-		var Acc = AccountGet(socket.id);
-		if ((Acc != null) && (data.Action != null) && (data.Action === "Break")) {
+		const Acc = Account.get(socket.id);
+		if ((Acc !== undefined) && (data.Action != null) && (data.Action === "Break")) {
 
 			var AccLoversNumbers = [];
 			for (var L = 0; L < Acc.Lovership.length; L++) {
@@ -1726,7 +1713,7 @@ function AccountLovership(data, socket) {
 		}
 
 		// In a chatroom, two players can enter in a lover relationship (6 steps to complete)
-		if ((Acc != null) && (Acc.ChatRoom != null)) {
+		if ((Acc !== undefined) && (Acc.ChatRoom != null)) {
 
 			var AccLoversNumbers = [];
 			for (var L = 0; L < Acc.Lovership.length; L++) {
@@ -1855,8 +1842,8 @@ function AccountDifficulty(data, socket) {
 	if ((data != null) && (typeof data === "number") && (data >= 0) && (data <= 3)) {
 
 		// Gets the current account
-		var Acc = AccountGet(socket.id);
-		if (Acc != null) {
+		const Acc = Account.get(socket.id);
+		if (Acc !== undefined) {
 
 			// Can only set to 2 or 3 if no change was done for 1 week
 			var LastChange = ((Acc.Difficulty == null) || (Acc.Difficulty.LastChange == null) || (typeof Acc.Difficulty.LastChange !== "number")) ? Acc.Creation : Acc.Difficulty.LastChange;
